@@ -1,0 +1,57 @@
+-- STEP 1: Add CreatedDate column to all tables
+-------------------------------------------------------
+DECLARE @SQL1 NVARCHAR(MAX) = N'';
+
+SELECT @SQL1 = @SQL1 + '
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns 
+    WHERE object_id = OBJECT_ID(''' + t.name + ''')
+      AND name = ''CreatedDate''
+)
+BEGIN
+    ALTER TABLE ' + t.name + ' 
+    ADD CreatedDate DATETIME NULL;
+END;
+'
+FROM sys.tables t
+WHERE t.name NOT LIKE 'sys%';
+
+EXEC(@SQL1);
+
+
+-------------------------------------------------------
+-- STEP 2: Backfill old records with a default date
+-- (You can change this date as needed)
+-------------------------------------------------------
+DECLARE @SQL2 NVARCHAR(MAX) = N'';
+
+SELECT @SQL2 = @SQL2 + '
+UPDATE ' + t.name + '
+SET CreatedDate = COALESCE(CreatedDate, ''2024-01-01'');
+'
+FROM sys.tables t
+JOIN sys.columns c ON t.object_id = c.object_id
+WHERE c.name = 'CreatedDate';
+
+EXEC(@SQL2);
+
+
+-------------------------------------------------------
+-- STEP 3: Fetch last 15 days data from ALL tables
+-------------------------------------------------------
+DECLARE @SQL3 NVARCHAR(MAX) = N'';
+
+SELECT @SQL3 = @SQL3 + '
+SELECT ''' + t.name + ''' AS TableName, *
+FROM ' + t.name + '
+WHERE CreatedDate >= DATEADD(DAY, -15, GETDATE())
+UNION ALL
+'
+FROM sys.tables t
+JOIN sys.columns c ON t.object_id = c.object_id
+WHERE c.name = 'CreatedDate';
+
+-- Remove the last UNION ALL
+SET @SQL3 = LEFT(@SQL3, LEN(@SQL3) - 10);
+
+EXEC(@SQL3);
