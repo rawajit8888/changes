@@ -1,0 +1,141 @@
+import json
+import os
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+import pandas as pd
+import matplotlib.pyplot as plt
+import pickle
+from sklearn.preprocessing import LabelEncoder          # <<< CHANGED
+
+
+# ----------------------------
+# 1. Load JSON from Label Studio  (NO CHANGE)
+# ----------------------------
+def load_labelstudio(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    texts = []
+    labels = []
+
+    for task in data:
+        text = task["data"]["html"]
+
+        task_labels = []
+        for ann in task.get("annotations", []):
+            for res in ann.get("result", []):
+                if res.get("type") == "taxonomy":
+                    cats = res["value"].get("taxonomy", [])
+                    if isinstance(cats, list) and len(cats) > 0:
+                        for item in cats:
+                            if isinstance(item, list):
+                                task_labels.extend(item)
+                            else:
+                                task_labels.append(item)
+
+        if len(task_labels) > 0:
+            texts.append(text)
+            labels.append(task_labels[0])   # <<< CHANGED (pick only 1 label)
+
+    return texts, labels
+
+
+
+# ----------------------------
+# 2. Train/Test Split (NO CHANGE)
+# ----------------------------
+def prepare_data(texts, labels, test_size=0.2):
+    return train_test_split(texts, labels, test_size=test_size, random_state=42)
+
+
+
+# ----------------------------
+# 3. Load Model + LabelEncoder  (UPDATED)
+# ----------------------------
+def load_model(model_path, encoder_path):
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    # <<< CHANGED — Load LabelEncoder instead of MultiLabelBinarizer
+    with open(encoder_path, "rb") as f:
+        le = pickle.load(f)
+
+    model = AutoModelForSequenceClassification.from_pretrained(model_path)
+
+    return tokenizer, model, le
+
+
+
+# ----------------------------
+# 4. Predict SINGLE LABEL (UPDATED)
+# ----------------------------
+def predict_single(texts, tokenizer, model):
+    preds = []
+    model.eval()
+
+    with torch.no_grad():
+        for text in texts:
+            enc = tokenizer(text, truncation=True, padding=True, return_tensors="pt")
+            logits = model(**enc).logits
+            probs = torch.softmax(logits, dim=1)             # <<< CHANGED
+            pred = torch.argmax(probs, dim=1).item()         # <<< CHANGED
+            preds.append(pred)
+
+    return preds
+
+
+
+# ----------------------------
+# 5. Evaluation (UPDATED)
+# ----------------------------
+def evaluate(y_true, y_pred, le):
+
+    # <<< CHANGED — decode integers to category strings
+    true_labels = le.inverse_transform(y_true)
+    pred_labels = le.inverse_transform(y_pred)
+
+    print("\nClassification Report:\n")
+    print(classification_report(true_labels, pred_labels))
+
+    print("\nAccuracy:", accuracy_score(true_labels, pred_labels))
+
+    # Save CSV
+    df = pd.DataFrame({"true": true_labels, "pred": pred_labels})
+    df.to_csv("evaluation_results.csv", index=False)
+    print("Saved → evaluation_results.csv")
+
+
+
+# ----------------------------
+# MAIN PIPELINE (UPDATED)
+# ----------------------------
+def main():
+
+    json_path = "project.json"
+    model_path = "model_folder"
+    encoder_path = "encoders/classes.json"
+
+    print("Loading data…")
+    texts, labels = load_labelstudio(json_path)
+
+    print("Train/Test splitting…")
+    X_train, X_test, y_train_raw, y_test_raw = prepare_data(texts, labels)
+
+    print("Loading model + encoder…")
+    tokenizer, model, le = load_model(model_path, encoder_path)
+
+    print("Encoding labels…")
+    y_train = le.transform(y_train_raw)     # <<< CHANGED
+    y_test  = le.transform(y_test_raw)      # <<< CHANGED
+
+    print("Predicting…")
+    y_pred = predict_single(X_test, tokenizer, model)
+
+    print("Evaluating…")
+    evaluate(y_test, y_pred, le)
+
+
+if __name__ == "__main__":
+    main()
